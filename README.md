@@ -4,15 +4,17 @@ This public repository contains only the standalone installation scripts and the
 
 ## 主站
 
-支持 Debian 12/13、Ubuntu 22.04/24.04，Linux amd64/arm64 和 systemd。无需域名。开放主站 TCP 80/443，将下方 `主站公网IP` 替换为该 VPS 的固定公网 IP：
+支持 Debian 12/13、Ubuntu 22.04/24.04，Linux amd64/arm64 和 systemd。无需域名或手填 IP。开放主站 TCP 80/443，脚本自动识别公网 IP：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.2 --public-ip 主站公网IP
+curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.3
 ```
 
-也可用 `wget -qO-` 替代 `curl -fsSL`。私有安装包需要 GitHub 只读授权：脚本会隐藏输入 Token，或传入 `--github-token-file /root/dao-readonly-token`。推荐 fine-grained PAT，仅授予 DAO 发行仓库 Contents: Read-only。凭据只由主站保存，用于自身和节点的发行下载；不写入命令 URL，也不下发到 Worker。
+也可用 `wget -qO-` 替代 `curl -fsSL`。私有安装包需要 GitHub 只读授权：脚本会隐藏输入 Token，或传入 `--github-token-file /root/dao-readonly-token`。已有且有效、能读取 DAO 私有仓库的 Token 也能使用，不强制另建。推荐专用 fine-grained PAT，仅选择 DAO 仓库，授予 Contents: Read-only。凭据只由主站保存，用于自身和节点的发行下载；不写入命令 URL，也不下发到 Worker。
 
-不指定 `--version` 时只安装最新正式版。当前试部署版本为 `v0.4.0-rc.2`，请明确指定。安装器校验 SHA256，自动准备数据库、服务和管理员。初始密码在 `/etc/dao/admin-password`，运行后配置 LLM 与业务所需凭据。
+不指定 `--version` 时只安装最新正式版。当前试部署版本为 `v0.4.0-rc.3`，请明确指定。安装器校验 SHA256，自动准备数据库、服务和管理员。初始密码在 `/etc/dao/admin-password`，运行后配置 LLM 与业务所需凭据。
+
+新安装优先通过两个独立 HTTPS 查询源确认公网 IPv4，IPv4 不可用时尝试 IPv6；忽略代理环境变量，避免识别到代理 IP。查询冲突或失败会停止并提示加 `--public-ip 实际IP`，不回退 HTTP。多 IP 或入站/出口地址不同也可手动指定；重装默认沿用已保存地址，显式 `--public-ip auto` 才重新识别。查询只能确认出口地址，公网可达性仍由证书签发与节点接入验证。已有反向代理可使用 `--listen 127.0.0.1` 自行配置 HTTPS。
 
 IP 证书由 Let’s Encrypt 签发，有效期约 6 天；安装器配置独立 `dao-https` 服务自动续期并加载新证书，无需手动重启主站。主站后端仅监听本机。请持续开放 TCP 80/443；证书日志：`journalctl -u dao-https`。有域名也可把 `--public-ip` 换成 `--domain dao.example.com`。IPv6 参数不加方括号，浏览器地址为 `https://[IPv6]`。
 
