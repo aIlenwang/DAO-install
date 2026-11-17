@@ -5,7 +5,7 @@ ROLE=main
 if [[ " ${*} " == *" --help "* || " ${*} " == *" -h "* ]]; then
   cat <<'HELP'
 DAO Linux 一键安装：Debian 12/13、Ubuntu 22.04/24.04，amd64/arm64，systemd。
-主站：sudo bash install-main.sh --version v0.4.0-rc.3
+主站：sudo bash install-main.sh --version v0.4.0-rc.4
 IP HTTPS：新主站默认自动识别公网 IP 并申请/续期证书，保持 TCP 80/443 开放。
 手动指定：--public-ip IP；重新识别：--public-ip auto；已有代理：--listen 127.0.0.1。
 私有仓库：--github-token-file /root/readonly-token，或运行时隐藏输入。
@@ -238,22 +238,32 @@ def prepare_hostname(etc=Path('/etc')):
         return True
     except (OSError, UnicodeError):
         pass
-    if not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', name):
+    canonical = name.removesuffix('.').lower()
+    labels = canonical.split('.')
+    if len(canonical) > 253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels):
         log('主机名为特殊格式且无法解析，保留现有配置；请核对 /etc/hostname、/etc/hosts 和 NSS。')
         return False
     advice = f'主机名 {name} 无法解析；请核对 /etc/hostname、/etc/hosts 和 NSS，缺少本机映射时可补充 127.0.1.1 {name}。此问题不要求购买域名。'
     hosts = etc/'hosts'
     temporary = None
     try:
-        if (etc/'hostname').read_text().strip() != name:
+        if (etc/'hostname').read_text().strip().removesuffix('.').lower() != canonical:
             log(advice + ' 静态与运行中主机名不一致，未自动修改。'); return
         metadata = hosts.lstat()
         if not stat.S_ISREG(metadata.st_mode):
             log(advice + ' hosts 为特殊文件或符号链接，未自动修改。'); return
         original = hosts.read_bytes()
         rows = [line.split('#', 1)[0].split() for line in original.decode().splitlines()]
-        if any(name.lower() in [alias.lower() for alias in row[1:]] for row in rows):
+        existing = {alias.removesuffix('.').lower() for row in rows for alias in row[1:]}
+        if canonical in existing:
             log(advice + ' 已有名称映射，保留原配置，请检查解析服务。'); return
+        # Add the conventional short alias only when no existing entry owns it.
+        aliases = [canonical]
+        # NSS files does not strip a DNS root dot like a DNS resolver would.
+        if name.endswith('.'):
+            aliases.append(canonical + '.')
+        if len(labels) > 1 and labels[0] not in existing:
+            aliases.append(labels[0])
         nss = (etc/'nsswitch.conf').read_text()
         host_rules = [line.split('#', 1)[0].split(':', 1)[1].split() for line in nss.splitlines() if line.lstrip().startswith('hosts:')]
         if not host_rules or 'files' not in host_rules[0]:
@@ -264,7 +274,7 @@ def prepare_hostname(etc=Path('/etc')):
             out.write(original); out.flush(); os.fsync(out.fileno())
         fd, temporary = tempfile.mkstemp(prefix='.dao-hosts-', dir=etc)
         with os.fdopen(fd, 'wb') as out:
-            out.write(original + (b'' if original.endswith(b'\n') else b'\n') + f'127.0.1.1\t{name} # DAO local hostname\n'.encode())
+            out.write(original + (b'' if original.endswith(b'\n') else b'\n') + ('127.0.1.1\t' + ' '.join(aliases) + ' # DAO local hostname\n').encode())
             out.flush(); os.fsync(out.fileno())
             os.fchown(out.fileno(), metadata.st_uid, metadata.st_gid)
             os.fchmod(out.fileno(), stat.S_IMODE(metadata.st_mode))
@@ -275,7 +285,7 @@ def prepare_hostname(etc=Path('/etc')):
         try:
             socket.getaddrinfo(name, None)
             return True
-        except OSError:
+        except (OSError, UnicodeError):
             log(advice + ' 映射已写入，但解析仍异常，请检查 NSS 配置。')
     except (OSError, UnicodeError) as error:
         log(advice + f' 自动处理未完成（{type(error).__name__}），请由服务器管理员检查。')

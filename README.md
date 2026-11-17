@@ -7,12 +7,12 @@ This public repository contains only the standalone installation scripts and the
 支持 Debian 12/13、Ubuntu 22.04/24.04，Linux amd64/arm64 和 systemd。无需域名或手填 IP。开放主站 TCP 80/443，脚本自动识别公网 IP：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.3
+curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.4
 ```
 
 也可用 `wget -qO-` 替代 `curl -fsSL`。私有安装包需要 GitHub 只读授权：脚本会隐藏输入 Token，或传入 `--github-token-file /root/dao-readonly-token`。已有且有效、能读取 DAO 私有仓库的 Token 也能使用，不强制另建。推荐专用 fine-grained PAT，仅选择 DAO 仓库，授予 Contents: Read-only。凭据只由主站保存，用于自身和节点的发行下载；不写入命令 URL，也不下发到 Worker。
 
-不指定 `--version` 时只安装最新正式版。当前试部署版本为 `v0.4.0-rc.3`，请明确指定。安装器校验 SHA256，自动准备数据库、服务和管理员。初始密码在 `/etc/dao/admin-password`，运行后配置 LLM 与业务所需凭据。
+不指定 `--version` 时只安装最新正式版。当前试部署版本为 `v0.4.0-rc.4`，请明确指定。安装器校验 SHA256，自动准备数据库、服务和管理员。初始密码在 `/etc/dao/admin-password`，运行后配置 LLM 与业务所需凭据。
 
 新安装优先通过两个独立 HTTPS 查询源确认公网 IPv4，IPv4 不可用时尝试 IPv6；忽略代理环境变量，避免识别到代理 IP。查询冲突或失败会停止并提示加 `--public-ip 实际IP`，不回退 HTTP。多 IP 或入站/出口地址不同也可手动指定；重装默认沿用已保存地址，显式 `--public-ip auto` 才重新识别。查询只能确认出口地址，公网可达性仍由证书签发与节点接入验证。已有反向代理可使用 `--listen 127.0.0.1` 自行配置 HTTPS。
 
@@ -36,7 +36,7 @@ Worker 无需域名、IP 证书或入站端口，只需出站访问主站 HTTPS 
 
 新引导脚本提前准备 PostgreSQL 管理依赖，避免首次安装的 `pg_lsclusters: not found`。这也覆盖旧 `rc.3` 主站生成的 Worker 安装命令，主站无需升级。
 
-本机主机名无法解析时，仅在确认短主机名与静态配置一致且缺少 hosts 映射时，备份 `/etc/hosts` 后补齐映射并验证；保留已有条目、权限和特殊配置，复杂情况给出明确提示。已安装主站可单独执行：
+本机主机名无法解析时，仅在确认合法短名称或完整域名 FQDN 与静态配置一致且缺少 hosts 映射时，备份 `/etc/hosts` 后补齐映射并验证；保留已有条目、权限和特殊配置，复杂情况给出明确提示。完整域名只在短别名没有现有映射时才一同补齐，不覆盖服务商配置。已安装主站或 Worker 可单独执行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --repair-hostname
@@ -44,7 +44,9 @@ curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-
 
 该参数单独使用，不需要 GitHub Token，不安装应用或重启 DAO。若仍不能解析会返回非零；备份位于 `/etc/hosts.dao-backup-*`。第一次 sudo 启动时的旧解析警告可能仍会出现。
 
-公开脚本修复即时覆盖后续安装；已发布 ZIP 保持不变。使用旧本地包时，以最新公开入口加 `--bundle-dir` 调用即可获得修复。
+公开脚本的主机名/数据库准备修复覆盖后续旧版安装；已发布 ZIP 保持不变。使用旧本地包时，以最新公开入口加 `--bundle-dir` 调用即可获得这些引导修复。
+
+`v0.4.0-rc.4` 的包内安装器另修正了参考 CLI 统计，并明确安全 tar 解压策略，消除 Python 3.13 弃用警告。CLI 按可导入配方去重统计，内置/待适配项不计入分母，缺失依赖写入工具清单；不表示所有第三方工具已安装。正在运行的 rc.3 可继续使用，无需为这些提示停机重装；其包内安装器和已有清单不会被公开脚本追溯替换。以后升级主站/Worker 时保持同版。
 
 ## 重装与排障
 
