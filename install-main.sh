@@ -11,6 +11,7 @@ IP HTTPS：新主站默认自动识别公网 IP 并申请/续期证书，保持 
 私有仓库：--github-token-file /root/readonly-token，或运行时隐藏输入。
 Worker：复制主站“Worker 节点”生成的安装命令，无需 GitHub Token。
 已有配置：sudo bash install-worker.sh --config /etc/dao-worker/config.json
+只修主机名：sudo bash install-main.sh --repair-hostname（不安装、不重启 DAO）。
 保留离线包/指定下载：--bundle-dir DIR，或 --bundle-url HTTPS_URL --sha256 HASH。
 重装保留数据；升级前暂停/完成任务并停止服务。--tools standard|minimal。
 HELP
@@ -44,6 +45,8 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import secrets
+import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -221,17 +224,103 @@ def node_config(args, arch):
     cfg=json.loads(source.read_text());SECRETS.append(cfg['token'])
     return cfg,node_request(cfg,'download',dict(arch=arch))['release'],None
 
-def run_helper(args, root, extra):
-    command = [sys.executable,str(root/'deploy/install.py'),args.role,*extra]
+def run_logged(command, message, env=None):
     # Stream output through a bounded, redacted local installation log.
-    with subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True) as process:
+    with subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=env) as process:
         for line in process.stdout: log(line.rstrip())
         code = process.wait()
-    if code: raise ValueError('安装未完成；查看上方失败步骤和本机安装日志')
+    if code: raise ValueError(message)
+
+def prepare_hostname(etc=Path('/etc')):
+    name = socket.gethostname()
+    try:
+        socket.getaddrinfo(name, None)
+        return True
+    except (OSError, UnicodeError):
+        pass
+    if not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', name):
+        log('主机名为特殊格式且无法解析，保留现有配置；请核对 /etc/hostname、/etc/hosts 和 NSS。')
+        return False
+    advice = f'主机名 {name} 无法解析；请核对 /etc/hostname、/etc/hosts 和 NSS，缺少本机映射时可补充 127.0.1.1 {name}。此问题不要求购买域名。'
+    hosts = etc/'hosts'
+    temporary = None
+    try:
+        if (etc/'hostname').read_text().strip() != name:
+            log(advice + ' 静态与运行中主机名不一致，未自动修改。'); return
+        metadata = hosts.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            log(advice + ' hosts 为特殊文件或符号链接，未自动修改。'); return
+        original = hosts.read_bytes()
+        rows = [line.split('#', 1)[0].split() for line in original.decode().splitlines()]
+        if any(name.lower() in [alias.lower() for alias in row[1:]] for row in rows):
+            log(advice + ' 已有名称映射，保留原配置，请检查解析服务。'); return
+        nss = (etc/'nsswitch.conf').read_text()
+        host_rules = [line.split('#', 1)[0].split(':', 1)[1].split() for line in nss.splitlines() if line.lstrip().startswith('hosts:')]
+        if not host_rules or 'files' not in host_rules[0]:
+            log(advice + ' NSS 未启用 files，未自动修改。'); return
+        backup = hosts.with_name('hosts.dao-backup-' + secrets.token_hex(6))
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as out:
+            out.write(original); out.flush(); os.fsync(out.fileno())
+        fd, temporary = tempfile.mkstemp(prefix='.dao-hosts-', dir=etc)
+        with os.fdopen(fd, 'wb') as out:
+            out.write(original + (b'' if original.endswith(b'\n') else b'\n') + f'127.0.1.1\t{name} # DAO local hostname\n'.encode())
+            out.flush(); os.fsync(out.fileno())
+            os.fchown(out.fileno(), metadata.st_uid, metadata.st_gid)
+            os.fchmod(out.fileno(), stat.S_IMODE(metadata.st_mode))
+        if hosts.is_symlink() or hosts.read_bytes() != original:
+            log(advice + ' hosts 安装期间发生变化，未替换。'); return
+        os.replace(temporary, hosts)
+        log(f'已补齐本机主机名映射 {name}；原 hosts 保留在 {backup}。')
+        try:
+            socket.getaddrinfo(name, None)
+            return True
+        except OSError:
+            log(advice + ' 映射已写入，但解析仍异常，请检查 NSS 配置。')
+    except (OSError, UnicodeError) as error:
+        log(advice + f' 自动处理未完成（{type(error).__name__}），请由服务器管理员检查。')
+    finally:
+        if temporary and os.path.exists(temporary): os.unlink(temporary)
+
+def extra_option(extra, flag):
+    for index, value in enumerate(extra):
+        if value == flag:
+            if index + 1 >= len(extra): raise ValueError(flag + ' 缺少值')
+            return extra[index + 1]
+        if value.startswith(flag + '='): return value.split('=', 1)[1]
+    return None
+
+def prepare_postgres(args, extra, etc=Path('/etc')):
+    # Public bootstrap also fixes old rc.3 bundles, including Workers paired with
+    # an already running rc.3 controller. Application binaries stay unchanged.
+    if shutil.which('pg_lsclusters'): return
+    if args.role == 'main':
+        if (etc/'dao/config.json').exists() or extra_option(extra, '--database-config') is not None: return
+    else:
+        source = extra_option(extra, '--config')
+        for path in ([Path(source)] if source else []) + [etc/'dao-worker/config.json']:
+            if path.is_file():
+                value = json.loads(path.read_text())
+                if not isinstance(value, dict): raise ValueError('Worker 配置必须是 JSON 对象')
+                if value.get('database_dsn'): return
+    log('准备 PostgreSQL 管理依赖，兼容首次安装的预配置流程。')
+    env = dict(os.environ, DEBIAN_FRONTEND='noninteractive', NEEDRESTART_MODE='a')
+    message = 'PostgreSQL 管理依赖安装失败，未启动 DAO 安装器；请检查 apt 日志后重试。'
+    run_logged(['apt-get', 'update'], message, env)
+    run_logged(['apt-get', 'install', '-y', '--no-install-recommends', 'postgresql-common'], message, env)
+
+def run_helper(args, root, extra):
+    if not Path('/run/systemd/system').is_dir():
+        raise ValueError('安装需要正在运行的 systemd，尚未修改主机名或安装数据库依赖')
+    prepare_hostname()
+    prepare_postgres(args, extra)
+    command = [sys.executable,str(root/'deploy/install.py'),args.role,*extra]
+    run_logged(command, '安装未完成；查看上方失败步骤和本机安装日志')
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='DAO GitHub 一键安装；默认安装正式版，预览版用 --version。')
     parser.add_argument('role',choices=['main','worker']);parser.add_argument('local')
+    parser.add_argument('--repair-hostname', action='store_true', help='仅修复缺失的本机主机名映射，不下载或重启 DAO')
     for flag in ['repo','version','github-token-file','bundle-dir','bundle-url','sha256','controller','node','enroll','enroll-file','config']:
         parser.add_argument('--'+flag)
     args, extra = parser.parse_known_args(argv)
@@ -242,6 +331,12 @@ def main(argv=None):
     if os.geteuid()!=0: raise ValueError('请以 root 或 sudo bash 运行')
     arch = {'x86_64':'amd64','aarch64':'arm64'}.get(platform.machine())
     if not arch: raise ValueError('仅支持 Linux amd64/arm64')
+    if args.repair_hostname:
+        if extra or any(getattr(args, key.replace('-', '_')) is not None for key in ['repo','version','github-token-file','bundle-dir','bundle-url','sha256','controller','node','enroll','enroll-file','config']):
+            raise ValueError('--repair-hostname 必须单独使用，不接受安装或下载参数')
+        if not prepare_hostname(): raise ValueError('主机名解析尚未修复，请按上方提示检查服务器配置；DAO 服务未操作')
+        log('主机名解析检查通过；DAO 服务未操作。')
+        return 0
     ensure_stopped(args.role)
     global LOG
     directory=Path(os.environ.get('DAO_INSTALL_LOG_DIR','/var/log/dao-install'));directory.mkdir(parents=True,exist_ok=True,mode=0o700)

@@ -32,6 +32,20 @@ Worker 无需域名、IP 证书或入站端口，只需出站访问主站 HTTPS 
 
 节点直接从 GitHub 下载配套版本，准备本机 PostgreSQL 和执行环境，注册后由主站确认就绪。主站不转发安装包。默认执行环境包含基础命令、Python、Node、Chromium 和 Playwright MCP；其他工具的凭据、字典或特殊依赖按需要配置。
 
+## 安装前检查与主机名修复
+
+新引导脚本提前准备 PostgreSQL 管理依赖，避免首次安装的 `pg_lsclusters: not found`。这也覆盖旧 `rc.3` 主站生成的 Worker 安装命令，主站无需升级。
+
+本机主机名无法解析时，仅在确认短主机名与静态配置一致且缺少 hosts 映射时，备份 `/etc/hosts` 后补齐映射并验证；保留已有条目、权限和特殊配置，复杂情况给出明确提示。已安装主站可单独执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --repair-hostname
+```
+
+该参数单独使用，不需要 GitHub Token，不安装应用或重启 DAO。若仍不能解析会返回非零；备份位于 `/etc/hosts.dao-backup-*`。第一次 sudo 启动时的旧解析警告可能仍会出现。
+
+公开脚本修复即时覆盖后续安装；已发布 ZIP 保持不变。使用旧本地包时，以最新公开入口加 `--bundle-dir` 调用即可获得修复。
+
 ## 重装与排障
 
 升级前先暂停/完成任务、停止接收新任务，再停止 `dao` 或 `dao-worker` 服务。安装器拒绝自动覆盖运行中的服务，保留配置、数据库与任务文件，不自动回滚数据库。
