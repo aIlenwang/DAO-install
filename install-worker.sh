@@ -5,11 +5,11 @@ ROLE=worker
 if [[ " ${*} " == *" --help "* || " ${*} " == *" -h "* ]]; then
   cat <<'HELP'
 DAO Linux 一键安装：Debian 12/13、Ubuntu 22.04/24.04，amd64/arm64，systemd。
-主站：sudo bash install-main.sh --version v0.4.0-rc.4
+主站：sudo bash install-main.sh --version v0.4.0-rc.5
 IP HTTPS：新主站默认自动识别公网 IP 并申请/续期证书，保持 TCP 80/443 开放。
 手动指定：--public-ip IP；重新识别：--public-ip auto；已有代理：--listen 127.0.0.1。
 私有仓库：--github-token-file /root/readonly-token，或运行时隐藏输入。
-Worker：复制主站“Worker 节点”生成的安装命令，无需 GitHub Token。
+Worker：复制主站“远程 Worker → 安装与接入”生成的安装命令，无需 GitHub Token。
 已有配置：sudo bash install-worker.sh --config /etc/dao-worker/config.json
 只修主机名：sudo bash install-main.sh --repair-hostname（不安装、不重启 DAO）。
 保留离线包/指定下载：--bundle-dir DIR，或 --bundle-url HTTPS_URL --sha256 HASH。

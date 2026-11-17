@@ -7,12 +7,12 @@ This public repository contains only the standalone installation scripts and the
 支持 Debian 12/13、Ubuntu 22.04/24.04，Linux amd64/arm64 和 systemd。无需域名或手填 IP。开放主站 TCP 80/443，脚本自动识别公网 IP：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.4
+curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.5
 ```
 
 也可用 `wget -qO-` 替代 `curl -fsSL`。私有安装包需要 GitHub 只读授权：脚本会隐藏输入 Token，或传入 `--github-token-file /root/dao-readonly-token`。已有且有效、能读取 DAO 私有仓库的 Token 也能使用，不强制另建。推荐专用 fine-grained PAT，仅选择 DAO 仓库，授予 Contents: Read-only。凭据只由主站保存，用于自身和节点的发行下载；不写入命令 URL，也不下发到 Worker。
 
-不指定 `--version` 时只安装最新正式版。当前试部署版本为 `v0.4.0-rc.4`，请明确指定。安装器校验 SHA256，自动准备数据库、服务和管理员。初始密码在 `/etc/dao/admin-password`，运行后配置 LLM 与业务所需凭据。
+不指定 `--version` 时只安装最新正式版。当前试部署版本为 `v0.4.0-rc.5`，请明确指定。安装器校验 SHA256，自动准备数据库、服务和管理员。初始密码在 `/etc/dao/admin-password`，运行后配置 LLM 与业务所需凭据。
 
 新安装优先通过两个独立 HTTPS 查询源确认公网 IPv4，IPv4 不可用时尝试 IPv6；忽略代理环境变量，避免识别到代理 IP。查询冲突或失败会停止并提示加 `--public-ip 实际IP`，不回退 HTTP。多 IP 或入站/出口地址不同也可手动指定；重装默认沿用已保存地址，显式 `--public-ip auto` 才重新识别。查询只能确认出口地址，公网可达性仍由证书签发与节点接入验证。已有反向代理可使用 `--listen 127.0.0.1` 自行配置 HTTPS。
 
@@ -20,7 +20,7 @@ IP 证书由 Let’s Encrypt 签发，有效期约 6 天；安装器配置独立
 
 ## Worker
 
-在主站“Worker 节点”添加节点，填写主站 HTTPS 地址和容量，在“安装 Worker 节点”生成一次性命令，复制到对应 VPS 执行。安装码 15 分钟有效，仅绑定该节点；不用手工上传 JSON，不需要 GitHub Token。
+在主站“远程 Worker → 安装与接入”添加节点，填写主站 HTTPS 地址和容量，在“安装 Worker 节点”生成一次性命令，复制到对应 VPS 执行。安装码 15 分钟有效，仅绑定该节点；不用手工上传 JSON，不需要 GitHub Token。
 
 命令格式如下；节点 ID 和安装码必须使用主站生成的实际值，每台 VPS 各一份：
 
@@ -47,6 +47,19 @@ curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-
 公开脚本的主机名/数据库准备修复覆盖后续旧版安装；已发布 ZIP 保持不变。使用旧本地包时，以最新公开入口加 `--bundle-dir` 调用即可获得这些引导修复。
 
 `v0.4.0-rc.4` 的包内安装器另修正了参考 CLI 统计，并明确安全 tar 解压策略，消除 Python 3.13 弃用警告。CLI 按可导入配方去重统计，内置/待适配项不计入分母，缺失依赖写入工具清单；不表示所有第三方工具已安装。正在运行的 rc.3 可继续使用，无需为这些提示停机重装；其包内安装器和已有清单不会被公开脚本追溯替换。以后升级主站/Worker 时保持同版。
+
+## 已安装 rc.3 / rc.4 的过渡升级
+
+rc.5 增加管理对话、Telegram、二级菜单和主站/节点在线更新。旧版不能读取预览更新，也没有节点在线换装能力，首次需通过脚本升级。先完成或暂停任务、结束节点对话，主站升级并恢复访问后再升级各节点：
+
+```bash
+# 主站；沿用原配置、数据库和安装凭据
+sudo systemctl stop dao && curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.5
+# 各 Worker；沿用原节点身份，无需重新生成安装码
+sudo systemctl stop dao-worker && curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-worker.sh | sudo bash -s -- --config /etc/dao-worker/config.json
+```
+
+以后在“系统配置 → 版本与更新”检查更新，预览版默认跟随预览通道。主站先更新，勾选同步的节点在空闲后分批更新（最多两台同时），直接从 GitHub 下载。任务运行中不强行升级；协议、数据库或运行依赖不兼容时明确要求安装器。
 
 ## 重装与排障
 
