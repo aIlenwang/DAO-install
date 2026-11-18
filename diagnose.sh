@@ -13,15 +13,21 @@ curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/diagnose
 也可配置 /etc/dao-diagnostics/github-token；未配置时隐藏询问 Token，不保存输入。
 需要诊断仓库 Contents 读写权限，安装只读 Token 不够；公开脚本不含凭据。
 不安装、不重启、不升级。上传后打印诊断编号；失败保留本地包。
+默认补充最近 24 小时本地轮转日志、HTTP 审计及应用/代理/数据库 journal。
+--hours 1..168 调整范围；每来源最多 20000 行/16 MiB，collection.json 明确记录覆盖及截断。
 HELP
   exit 0
 fi
 upload=0
 repo=aIlenwang/DAO-diagnostics
 token_file=
+hours=24
 while (( $# )); do
   case $1 in
     --upload) upload=1; shift ;;
+    --hours)
+      [[ $# -ge 2 && $2 =~ ^[0-9]{1,3}$ ]] && (( 10#$2 >= 1 && 10#$2 <= 168 )) || { echo '--hours 必须为 1..168。' >&2; exit 1; }
+      hours=$((10#$2)); shift 2 ;;
     --repo|--token-file)
       [[ $# -ge 2 && -n $2 && $2 != --* ]] || { echo '上传参数缺少值。' >&2; exit 1; }
       if [[ $1 == --repo ]]; then repo=$2; else token_file=$2; fi
@@ -98,9 +104,206 @@ if [[ -x /opt/dao-worker/dao-worker ]]; then
   export_logs worker /opt/dao-worker/dao-worker -config /etc/dao-worker/config.json
 fi
 
+if command -v python3 >/dev/null; then
+  if ! python3 - "$contents" "$roles" "$hours" <<'DAO_DIAGNOSTIC_COLLECT_PYTHON'
+"""Bounded, read-only diagnostic supplement; works with already installed rc.3.
+
+Only whitelisted log files/journal fields are copied. Never dumps environment,
+command lines, databases, task files or the contents of Worker configuration.
+"""
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+MAX_BYTES = 16 << 20
+MAX_LINES = 20000
+SECRETS = [
+    re.compile(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"(?i)\b(?:Bearer|Basic)\s+[a-z0-9._~+/=-]+"),
+    re.compile(r"\b(?:github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]{12,}"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
+]
+PAIR = re.compile(r'''(?i)(["']?(?:api[-_]?key|access[-_]?token|refresh[-_]?token|token|password|passwd|secret|authorization|cookie|set-cookie|database_dsn|dsn|private_key)["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'[^']*'|[^\s,;&]+)''')
+
+def redact(value):
+    if isinstance(value, dict):
+        return {k: ("[REDACTED]" if re.fullmatch(r"(?i)(password|token|authorization|cookie|set-cookie|api_key|database_dsn|secret)", k) else redact(v)) for k,v in value.items()}
+    if isinstance(value, list):
+        return [redact(v) for v in value]
+    if not isinstance(value, str):
+        return value
+    value = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/@]+@", r"\1[REDACTED]@", value)
+    for pattern in SECRETS:
+        value = pattern.sub("[REDACTED]", value)
+    value = PAIR.sub(r'\1"[REDACTED]"', value)
+    # Journal messages may contain Caddy request URIs. Queries can carry a JWT.
+    value = re.sub(r"((?:https?://[^\s\"']+|/api/[^\s\"'?]+))\?[^\s\"']*", r"\1?[QUERY REMOVED]", value)
+    return value[:8192] + (" [truncated]" if len(value)>8192 else "")
+
+def parse_time(value):
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.astimezone(dt.timezone.utc) if parsed.tzinfo else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+def regular_open(path, root):
+    # Anchor directory traversal to descriptors: no symlink escape or FIFO wait,
+    # including a directory replaced while the root collector is reading it.
+    parts=path.relative_to(root).parts
+    if not parts or any(p in ("..", ".") for p in parts): raise ValueError("invalid log path")
+    directory=os.open(root.resolve(),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        for part in parts[:-1]:
+            child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory)
+            os.close(directory);directory=child
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,dir_fd=directory)
+    finally: os.close(directory)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise ValueError("not a regular log file")
+    return os.fdopen(fd,"rb")
+
+def collect_files(root, relative, since, output):
+    root = Path(root)
+    report = {"source":relative,"files":[],"lines":0,"bytes_read":0,"invalid_lines":0,"truncated":False,"issues":[]}
+    selected = []
+    budget = MAX_BYTES
+    # Newest files have priority under a byte budget; output is chronological.
+    for suffix in ("", ".1", ".2", ".3"):
+        path = root / relative / ("system.jsonl"+suffix)
+        try:
+            with regular_open(path,root) as f:
+                size = os.fstat(f.fileno()).st_size
+                n = min(size,budget)
+                offset = size-n
+                f.seek(offset)
+                data = f.read(n)
+                report["files"].append({"name":path.name,"size":size,"bytes_read":len(data)})
+                report["bytes_read"] += len(data)
+                budget -= len(data)
+                report["truncated"] |= offset>0
+                if offset: data = data.partition(b"\n")[2]
+                lines = data.split(b"\n")[:-1]  # omit concurrent partial write
+                rows=[]
+                for raw in lines:
+                    try: row=json.loads(raw)
+                    except (ValueError, UnicodeError): report["invalid_lines"]+=1;continue
+                    if not isinstance(row,dict): report["invalid_lines"]+=1;continue
+                    at=parse_time(row.get("ts"))
+                    if at is not None and at<since: continue
+                    # Original log schema only; no arbitrary JSON objects.
+                    if "text" in row:
+                        row={k:row[k] for k in ("ts","instance","seq","db_id","level","tag","text") if k in row}
+                    else:
+                        row={k:row[k] for k in ("ts","event","level","request_id","method","route","status","code","client_ip","user_agent","task_id","node_id","elapsed_ms","count","first_at") if k in row}
+                    rows.append(redact(row))
+                selected=rows+selected
+                if len(selected)>MAX_LINES:
+                    selected=selected[-MAX_LINES:];report["truncated"]=True
+        except FileNotFoundError:
+            continue
+        except (OSError,ValueError) as error:
+            report["issues"].append(redact(str(error)))
+    with open(output,"w",encoding="utf-8") as f:
+        for row in selected: f.write(json.dumps(row,ensure_ascii=False)+"\n")
+    report["lines"]=len(selected)
+    report["first_at"]=selected[0].get("ts") if selected else None
+    report["last_at"]=selected[-1].get("ts") if selected else None
+    report["available"]=bool(report["files"])
+    return report
+
+def collect_journal(unit, since, output):
+    report={"unit":unit,"lines":0,"truncated":False,"issues":[]}
+    # Limit the child output as well as the final file: no unbounded PIPE read.
+    # JSON field whitelist excludes _CMDLINE, environment and arbitrary fields.
+    import resource
+    def limits(): resource.setrlimit(resource.RLIMIT_FSIZE,(MAX_BYTES,MAX_BYTES))
+    with tempfile.TemporaryFile() as raw:
+        try:
+            p=subprocess.run(["journalctl","--unit",unit,"--since",since.isoformat(),"--lines",str(MAX_LINES),"--no-pager","--output=json","--output-fields=__REALTIME_TIMESTAMP,MESSAGE,PRIORITY"],stdout=raw,stderr=subprocess.DEVNULL,timeout=8,preexec_fn=limits)
+            if p.returncode: report["issues"].append("journalctl exit "+str(p.returncode))
+        except (OSError,subprocess.TimeoutExpired) as error: report["issues"].append(redact(str(error)))
+        size=raw.tell();report["truncated"]=size>=MAX_BYTES
+        raw.seek(0)
+        with open(output,"w",encoding="utf-8") as f:
+            for line in raw:
+                try:
+                    row=json.loads(line)
+                    at=dt.datetime.fromtimestamp(int(row["__REALTIME_TIMESTAMP"])/1000000,dt.timezone.utc).isoformat()
+                    message=row.get("MESSAGE","")
+                    if not isinstance(message,str): continue
+                    # Caddy runtime JSON may include a nested request with headers.
+                    # Keep only fields useful for TLS/proxy/connection diagnosis.
+                    if message.startswith("{"):
+                        try:
+                            obj=json.loads(message)
+                            message=json.dumps({k:obj[k] for k in ("level","ts","logger","msg","error","duration","status","err_id","err_trace") if k in obj},ensure_ascii=False)
+                        except ValueError: pass
+                    record={"ts":at,"priority":row.get("PRIORITY"),"text":redact(message)}
+                    f.write(json.dumps(record,ensure_ascii=False)+"\n")
+                    report["lines"]+=1
+                    report.setdefault("first_at",at);report["last_at"]=at
+                except (ValueError,TypeError,KeyError,OverflowError): continue
+    report["truncated"] |= report["lines"]>=MAX_LINES
+    return report
+
+def main(contents, roles, hours):
+    contents=Path(contents)
+    now=dt.datetime.now(dt.timezone.utc);since=now-dt.timedelta(hours=hours)
+    report={"collected_at":now.isoformat(),"since":since.isoformat(),"max_lines_per_source":MAX_LINES,"max_bytes_per_source":MAX_BYTES,"sources":{},"issues":[]}
+    units=[]
+    for role in roles.split("-"):
+        root=Path("/var/lib/dao/data")
+        if role=="worker":
+            try:
+                with regular_open(Path("/etc/dao-worker/config.json"),Path("/etc/dao-worker")) as f:
+                    cfg=json.loads(f.read(1<<20))
+                root=Path(cfg["data_dir"])
+                if not root.is_absolute():raise ValueError("worker data_dir must be absolute")
+            except (OSError,ValueError,KeyError) as error:
+                report["issues"].append("worker path unavailable: "+redact(str(error)));continue
+        for name,relative in (("system","diagnostics"),("http","diagnostics/http")):
+            key=role+"-"+name
+            report["sources"][key]=collect_files(root,relative,since,contents/(key+".jsonl"))
+        units.extend(["dao", "dao-https"] if role=="main" else ["dao-worker"])
+    # Database startup/error logs and optional domain-based Caddy use only unit journals.
+    units.extend(["postgresql@*", "caddy"])
+    for unit in units:
+        key="journal-"+unit.replace("*","clusters")
+        report["sources"][key]=collect_journal(unit,since,contents/(key+".jsonl"))
+    report["partial"]=bool(report["issues"]) or any(x.get("issues") or x.get("truncated") or x.get("invalid_lines") for x in report["sources"].values())
+    (contents/"collection.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n")
+    total=sum(x.get("lines",0) for x in report["sources"].values())
+    print(f"补充采集最近 {hours} 小时：{total} 条记录；各来源行数、时间范围和截断情况见 collection.json。")
+    if report["partial"]:print("部分来源读取失败或达到限额，已明确记录；原始日志未修改。")
+
+if __name__=="__main__":
+    main(sys.argv[1],sys.argv[2],int(sys.argv[3]))
+DAO_DIAGNOSTIC_COLLECT_PYTHON
+  then
+    printf '补充采集异常，原生诊断包已保留。\n'
+    printf 'supplement collection failed\n' >"$contents/collection-error.txt"
+    failures=$((failures + 1))
+  fi
+else
+  printf 'python3 unavailable; extended logs not collected\n' >"$contents/collection-error.txt"
+  failures=$((failures + 1))
+fi
+
 cat >"$contents/README.txt" <<'INFO'
 DAO 按需诊断包：status.txt 为采集时的操作系统/服务状态；main.zip、worker.zip
 使用已安装程序的离线导出，包含程序版本、近期本地日志和对应 systemd journal。
+额外的 main/worker-system.jsonl、*-http.jsonl 和 journal-*.jsonl 不受旧版 200 行限制。
+默认最近 24 小时，可用 --hours 调整；collection.json 列明各来源范围、条数、读取失败和截断。
+系统文件与 journal 可能记录同一事件，分析时不要重复计数。缺少 http 文件在 rc.3 为正常情况。
+不声称收集数据库中的全部历史，轮转前已删除的记录不能恢复；任何限额都在清单中标明。
 缺少某角色表示本机未安装该角色；*-export.txt 记录导出结果，失败时保留部分信息。
 诊断 ZIP 中 partial/issues 说明缺失项。服务不存在或当前系统不支持某命令，也会记录。
 不含完整配置、密码文件、数据库备份、任务目录或全量模型/工具录制。
