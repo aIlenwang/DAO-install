@@ -1,6 +1,6 @@
 # DAO installation bootstrap
 
-This public repository contains only the standalone installation scripts and their license. DAO source code and release packages remain in the private [aIlenwang/DAO](https://github.com/aIlenwang/DAO) repository.
+This public repository contains the standalone installation and diagnostic scripts, README and license. DAO application source code and release packages remain in the private [aIlenwang/DAO](https://github.com/aIlenwang/DAO) repository.
 
 ## 主站
 
@@ -63,8 +63,16 @@ sudo systemctl stop dao-worker && curl -fsSL https://raw.githubusercontent.com/a
 
 ## 重装与排障
 
+在主站和 Worker VPS 分别执行同一条命令，自动识别本机角色，收集程序版本、近期脱敏日志、服务状态、重启次数和资源用量：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/diagnose.sh | sudo bash
+```
+
+支持已安装的 rc.3 及以后版本，无需先升级或提供 GitHub Token。最后打印 `/tmp/dao-check.XXXXXX/dao-diagnostics.tar.gz`，下载后提供给维护者；不会自动上传、不重启服务、不升级或安装软件。目录权限 0700，压缩包 0600。完整配置、密码文件、数据库与任务目录不会打包；常见日志凭据使用 DAO 已有脱敏，业务内容分享前仍需检查。某项无法读取时保留状态及错误记录，包内 `partial/issues` 表示缺失信息。离线日志不能代替数据库和实际任务的在线健康检查。
+
 升级前先暂停/完成任务、停止接收新任务，再停止 `dao` 或 `dao-worker` 服务。安装器拒绝自动覆盖运行中的服务，保留配置、数据库与任务文件，不自动回滚数据库。
 
 安装日志在 `/var/log/dao-install/`（0600，每角色最多 10 份、每份最多 8 MiB）。运行日志：`journalctl -u dao` 或 `journalctl -u dao-worker`。遇到下载中断可以重跑同一命令；已经启动但未就绪时先检查日志和主站节点状态。
 
-Scripts are generated from DAO's `deploy/bootstrap.py` using `scripts/build-bootstrap.py`. No repository credentials, source history, or application binaries are included here. Licensed under AGPL-3.0; see LICENSE.
+The two installation scripts are generated from DAO's `deploy/bootstrap.py` using `scripts/build-bootstrap.py`; `diagnose.sh` is maintained as a standalone read-only collector. No repository credentials, source history, or application binaries are included here. Licensed under AGPL-3.0; see LICENSE.
