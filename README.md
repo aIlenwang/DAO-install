@@ -81,6 +81,8 @@ curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/diagnose
 
 重复使用可由管理员把专用授权保存为 root 所有、权限 0600 的 `/etc/dao-diagnostics/github-token`，或追加 `--token-file /root/dao-diagnostic-token`。无终端且未提供文件时明确失败，不回退明文输入。其他账户使用 `--repo owner/private-repo` 指定已创建的私有仓库。
 
+若旧入口在交互式 SSH 终端误报“无法隐藏输入 Token”，重新运行上述 curl 命令获取修复后的脚本即可，无需升级 DAO。隐藏输入直接交由 Python `getpass` 打开控制终端，支持管道/内嵌脚本占用标准输入的场景；真正没有控制终端时仍需 `--token-file`。`sudo: unable to resolve host` 是独立的主机名解析问题，可使用上方 `--repair-hostname`，不通过重装服务处理。
+
 各 VPS 直传 GitHub，每次最多 16 MiB，按 UTC 日期保存在私有 Release 附件中，不经过主站、不进入源码仓库或任务备份。核对仓库私有性、远端大小与 SHA-256 后才显示上传成功、诊断编号和地址；授权、网络或校验失败保留本地包，已有上传响应丢失时按唯一编号核查，不盲目重传。回执保存在包旁 `upload-receipt.json`，不含 Token。将编号告诉有仓库访问权限的维护者即可读取；上传不会自动启动检查，也没有定时上传或自动删除历史附件。
 
 升级前先暂停/完成任务、停止接收新任务，再停止 `dao` 或 `dao-worker` 服务。安装器拒绝自动覆盖运行中的服务，保留配置、数据库与任务文件，不自动回滚数据库。

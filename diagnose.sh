@@ -205,8 +205,10 @@ def read_token(path):
         with warnings.catch_warnings():
             warnings.simplefilter("error", getpass.GetPassWarning)
             try:
-                with open("/dev/tty", "w+") as tty:
-                    token = getpass.getpass("诊断仓库 GitHub 写入 Token（隐藏输入，不保存）：", stream=tty).strip()
+                # getpass opens the controlling TTY using unbuffered FileIO.
+                # open('/dev/tty', 'w+') requires seeking and fails even on an
+                # interactive SSH terminal; stdin may also be the script pipe.
+                token = getpass.getpass("诊断仓库 GitHub 写入 Token（隐藏输入，不保存）：").strip()
             except (OSError, getpass.GetPassWarning, EOFError):
                 raise UploadError("无法隐藏输入 Token；请使用 --token-file 指定 root-only 的诊断授权文件。") from None
     if not token or len(token) > 8192 or any(c.isspace() for c in token) or not token.isascii():
