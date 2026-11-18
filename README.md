@@ -7,12 +7,12 @@ This public repository contains the standalone installation and diagnostic scrip
 支持 Debian 12/13、Ubuntu 22.04/24.04，Linux amd64/arm64 和 systemd。无需域名或手填 IP。开放主站 TCP 80/443，脚本自动识别公网 IP：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.10
+curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.11
 ```
 
 也可用 `wget -qO-` 替代 `curl -fsSL`。私有安装包需要 GitHub 只读授权：脚本会隐藏输入 Token，或传入 `--github-token-file /root/dao-readonly-token`。已有且有效、能读取 DAO 私有仓库的 Token 也能使用，不强制另建。推荐专用 fine-grained PAT，仅选择 DAO 仓库，授予 Contents: Read-only。凭据只由主站保存，用于自身和节点的发行下载；不写入命令 URL，也不下发到 Worker。
 
-不指定 `--version` 时只安装最新正式版。当前试部署版本为 `v0.4.0-rc.10`，请明确指定。安装器校验 SHA256，自动准备数据库、服务和管理员。首次启动前默认启用 HTTP Basic Auth，浏览器入口凭据在 `/etc/dao/basic-auth.json`（`sudo cat` 查看，root-only）；通过后再使用独立管理员密码登录。管理员初始密码在 `/etc/dao/admin-password`，运行后配置 LLM 与业务所需凭据。
+不指定 `--version` 时只安装最新正式版。当前试部署版本为 `v0.4.0-rc.11`，请明确指定。安装器校验 SHA256，自动准备数据库、服务和管理员。首次启动前默认启用 HTTP Basic Auth，浏览器入口凭据在 `/etc/dao/basic-auth.json`（`sudo cat` 查看，root-only）；通过后再使用独立管理员密码登录。管理员初始密码在 `/etc/dao/admin-password`，运行后配置 LLM 与业务所需凭据。
 
 新安装优先通过两个独立 HTTPS 查询源确认公网 IPv4，IPv4 不可用时尝试 IPv6；忽略代理环境变量，避免识别到代理 IP。查询冲突或失败会停止并提示加 `--public-ip 实际IP`，不回退 HTTP。多 IP 或入站/出口地址不同也可手动指定；重装默认沿用已保存地址，显式 `--public-ip auto` 才重新识别。查询只能确认出口地址，公网可达性仍由证书签发与节点接入验证。已有反向代理可使用 `--listen 127.0.0.1` 自行配置 HTTPS。
 
@@ -54,7 +54,7 @@ rc.10 增加默认入口 Basic Auth、DAO 标题、任务发现自动归属、�
 
 ```bash
 # 主站；沿用原配置、数据库和安装凭据
-sudo systemctl stop dao && curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.10
+sudo systemctl stop dao && curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-main.sh | sudo bash -s -- --version v0.4.0-rc.11
 # 各 Worker；沿用原节点身份，无需重新生成安装码
 sudo systemctl stop dao-worker && curl -fsSL https://raw.githubusercontent.com/aIlenwang/DAO-install/main/install-worker.sh | sudo bash -s -- --config /etc/dao-worker/config.json
 ```
