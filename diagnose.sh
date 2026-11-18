@@ -123,6 +123,8 @@ import tempfile
 
 MAX_BYTES = 16 << 20
 MAX_LINES = 20000
+JOURNAL_TIMEOUT = 15
+MAX_DATABASE_UNITS = 16
 SECRETS = [
     re.compile(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"(?i)\b(?:Bearer|Basic)\s+[a-z0-9._~+/=-]+"),
@@ -219,15 +221,51 @@ def collect_files(root, relative, since, output):
     report["available"]=bool(report["files"])
     return report
 
+def database_units(status_path):
+    # The shell entrypoint already enumerated loaded (including failed/inactive)
+    # database units. Reuse that bounded snapshot, not journalctl's glob search
+    # over all historical unit names, which can exhaust the timeout on a VPS.
+    units={"postgresql.service"}
+    issues=[]
+    try:
+        with regular_open(status_path,status_path.parent) as f:
+            data=f.read((64 << 10)+1)
+        if len(data)>64 << 10: raise ValueError("service status exceeds read limit")
+        section=False;found=False
+        for line in data.decode("utf-8",errors="replace").splitlines():
+            if line.startswith("["):
+                section=line=="[database-services]";found |= section
+                continue
+            if not section or not line.strip(): continue
+            name=line.split()[0]
+            if re.fullmatch(r"postgresql@[A-Za-z0-9_.\\:-]+\.service",name):
+                if name not in units and len(units)>=MAX_DATABASE_UNITS:
+                    issues.append("database unit limit reached; some clusters were not collected")
+                    break
+                units.add(name)
+            else:
+                issues.append("database unit enumeration incomplete; see status.txt")
+        if not found: issues.append("database service status section unavailable")
+    except (OSError,ValueError) as error:
+        issues.append("database unit enumeration unavailable: "+redact(str(error)))
+    return sorted(units),list(dict.fromkeys(issues))
+
 def collect_journal(unit, since, output):
-    report={"unit":unit,"lines":0,"truncated":False,"issues":[]}
+    units=[unit] if isinstance(unit,str) else list(unit)
+    if not units or any(any(c in name for c in "*?[") for name in units):
+        raise ValueError("journal collection requires explicit unit names")
+    report={"units":units,"lines":0,"truncated":False,"issues":[]}
+    if isinstance(unit,str): report["unit"]=unit
     # Limit the child output as well as the final file: no unbounded PIPE read.
     # JSON field whitelist excludes _CMDLINE, environment and arbitrary fields.
     import resource
     def limits(): resource.setrlimit(resource.RLIMIT_FSIZE,(MAX_BYTES,MAX_BYTES))
     with tempfile.TemporaryFile() as raw:
         try:
-            p=subprocess.run(["journalctl","--unit",unit,"--since",since.isoformat(),"--lines",str(MAX_LINES),"--no-pager","--output=json","--output-fields=__REALTIME_TIMESTAMP,MESSAGE,PRIORITY"],stdout=raw,stderr=subprocess.DEVNULL,timeout=8,preexec_fn=limits)
+            args=["journalctl"]
+            for name in units: args.extend(["--unit",name])
+            args.extend(["--since",since.isoformat(),"--lines",str(MAX_LINES),"--no-pager","--output=json","--output-fields=__REALTIME_TIMESTAMP,MESSAGE,PRIORITY"])
+            p=subprocess.run(args,stdout=raw,stderr=subprocess.DEVNULL,timeout=JOURNAL_TIMEOUT,preexec_fn=limits)
             if p.returncode: report["issues"].append("journalctl exit "+str(p.returncode))
         except (OSError,subprocess.TimeoutExpired) as error: report["issues"].append(redact(str(error)))
         size=raw.tell();report["truncated"]=size>=MAX_BYTES
@@ -274,10 +312,14 @@ def main(contents, roles, hours):
             report["sources"][key]=collect_files(root,relative,since,contents/(key+".jsonl"))
         units.extend(["dao", "dao-https"] if role=="main" else ["dao-worker"])
     # Database startup/error logs and optional domain-based Caddy use only unit journals.
-    units.extend(["postgresql@*", "caddy"])
+    units.append("caddy")
     for unit in units:
         key="journal-"+unit.replace("*","clusters")
         report["sources"][key]=collect_journal(unit,since,contents/(key+".jsonl"))
+    db_units,db_issues=database_units(contents/"status.txt")
+    key="journal-postgresql@clusters"
+    report["sources"][key]=collect_journal(db_units,since,contents/(key+".jsonl"))
+    report["sources"][key]["issues"].extend(db_issues)
     report["partial"]=bool(report["issues"]) or any(x.get("issues") or x.get("truncated") or x.get("invalid_lines") for x in report["sources"].values())
     (contents/"collection.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n")
     total=sum(x.get("lines",0) for x in report["sources"].values())
